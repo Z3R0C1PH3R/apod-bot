@@ -1,0 +1,31 @@
+# Secrets — never commit these
+client_secret_*.json
+token_*.pickle
+.env
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+env/
+.venv/
+venv/
+
+# Generated media and per-day working folders
+videos/
+20[0-9][0-9]-[0-1][0-9]-[0-3][0-9]/
+*.mp4
+out*.mp4
+
+# Old Piper voice models (no longer used)
+*.onnx
+*.onnx.json
+
+# Demo / scratch output
+voice-demo/
+voice-test/
+apod-test/
+test-run/
+
+# OS / editor
+.DS_Store
