@@ -77,23 +77,32 @@ def process_video(image_path, audio_path, srt_path, video_path, duration_ms):
         shutil.rmtree(workdir, ignore_errors=True)
 
 
-def build_description(date, text, data, voice_name):
-    tail = "Uploaded Automatically by a program, an experiment by Z3R0C1PH3R"
-    if data["media_type"] != "video":
-        image_ref = data.get("hdurl", data["url"])
-        body = (
-            f"{date} NASA's APOD update-\n{text}\n\nImage- {image_ref}\n"
-            f"Voice using Azure TTS ({voice_name})\n\n"
-            "#nasa #apod #space #astronomy #astrophotography #explore #reels #fyp #foryoupage\n\n"
-            f"{tail}"
-        )
-    else:
-        body = (
-            f"{date} NASA's APOD update-\nVideo- {data['url']}\n{text}\n\n"
-            f"Image- {data['thumbnail_url']}\nVoice using Azure TTS ({voice_name})\n\n"
-            f"#nasa #apod\n\n{tail}"
-        )
-    return body.replace(">", "").replace("<", "")
+def build_description(date, text, data, voice_name, attribution=True):
+    """Compose the post text. When attribution is False, the voice/automation
+    notes are omitted (used for the Instagram caption)."""
+    is_video = data["media_type"] == "video"
+    image_ref = data["thumbnail_url"] if is_video else data.get("hdurl", data["url"])
+    hashtags = (
+        "#nasa #apod"
+        if is_video
+        else "#nasa #apod #space #astronomy #astrophotography #explore #reels #fyp #foryoupage"
+    )
+
+    lines = [f"{date} NASA's APOD update-"]
+    if is_video:
+        lines.append(f"Video- {data['url']}")
+    lines.append(text)
+    lines.append("")
+    lines.append(f"Image- {image_ref}")
+    if attribution:
+        lines.append(f"Voice using Azure TTS ({voice_name})")
+    lines.append("")
+    lines.append(hashtags)
+    if attribution:
+        lines.append("")
+        lines.append("Uploaded Automatically by a program, an experiment by Z3R0C1PH3R")
+
+    return "\n".join(lines).replace(">", "").replace("<", "")
 
 
 def run(date=None):
@@ -131,8 +140,9 @@ def run(date=None):
 
     if os.getenv("INSTAGRAM_ACCESS_TOKEN"):
         try:
+            caption = build_description(date, text, data, voice_name, attribution=False)
             public_url = blob_upload.upload_video(video_path, f"{date}.mp4")
-            insta.upload_reel(public_url, description)
+            insta.upload_reel(public_url, caption)
         except Exception:
             log.exception("Instagram upload failed")
             failures.append("instagram")
