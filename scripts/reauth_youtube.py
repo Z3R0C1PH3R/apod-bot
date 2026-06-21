@@ -10,12 +10,10 @@ os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from upload import _client_secret_file
 from Google import Create_Service
 from utils import setup_logging
 
-CLIENT_SECRET_FILE = (
-    "client_secret_972392739439-jusfhmj94lvc65co2gnruul7geg6imnf.apps.googleusercontent.com.json"
-)
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 
 if __name__ == "__main__":
@@ -23,7 +21,7 @@ if __name__ == "__main__":
     print("Opening browser for Google login...")
     print("Leave this terminal open until you see 'YouTube token saved'.")
     print("Do not copy the localhost URL — the script handles it automatically.\n")
-    service = Create_Service(CLIENT_SECRET_FILE, "youtube", "v3", SCOPES)
+    service = Create_Service(_client_secret_file(), "youtube", "v3", SCOPES)
     if service is None:
         raise SystemExit("YouTube authentication failed")
     print("YouTube token saved to token_youtube_v3.pickle")

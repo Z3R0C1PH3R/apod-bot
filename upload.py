@@ -1,6 +1,8 @@
 """Upload a video to YouTube using a resumable, retrying upload."""
 
+import glob
 import logging
+import os
 import time
 
 from googleapiclient.errors import HttpError
@@ -10,7 +12,25 @@ from Google import Create_Service
 
 log = logging.getLogger(__name__)
 
-CLIENT_SECRET_FILE = "client_secret_972392739439-jusfhmj94lvc65co2gnruul7geg6imnf.apps.googleusercontent.com.json"
+
+def _client_secret_file() -> str:
+    """Locate the Google OAuth client secret JSON.
+
+    Prefers GOOGLE_CLIENT_SECRET_FILE, otherwise the first matching
+    client_secret*.json in the working directory.
+    """
+    explicit = os.getenv("GOOGLE_CLIENT_SECRET_FILE")
+    if explicit:
+        return explicit
+    matches = sorted(glob.glob("client_secret*.json"))
+    if not matches:
+        raise FileNotFoundError(
+            "No Google client secret found. Set GOOGLE_CLIENT_SECRET_FILE or place a "
+            "client_secret*.json in the working directory."
+        )
+    return matches[0]
+
+
 API_NAME = "youtube"
 API_VERSION = "v3"
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
@@ -21,7 +41,7 @@ _MAX_RETRIES = 5
 
 
 def upload_video(title, desc, filename, tags=("Shorts",), priv="public"):
-    service = Create_Service(CLIENT_SECRET_FILE, API_NAME, API_VERSION, SCOPES)
+    service = Create_Service(_client_secret_file(), API_NAME, API_VERSION, SCOPES)
     if service is None:
         raise RuntimeError("Could not create YouTube service")
 
