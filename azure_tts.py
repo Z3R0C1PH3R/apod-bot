@@ -10,11 +10,16 @@ from utils import retry
 
 log = logging.getLogger(__name__)
 
-MIN_CHARS = 15
-MAX_CHARS = 20
+# Max characters per on-screen caption (kept to one comfortable line).
+MAX_CHARS = 22
+# Try to keep each caption visible at least this long, merging tiny fragments.
+MIN_SEGMENT_MS = 900
 
 # Punctuation that should hug the previous word (no leading space) in subtitles.
 _NO_SPACE_BEFORE = set(".,:;!?)]}%")
+
+# A caption is cut after a token ending in one of these.
+_BREAK_AFTER = set(".,!?:;")
 
 # Paid-tier voices (set AZURE_SPEECH_VOICE to swap):
 #   en-US-Andrew:DragonHDLatestNeural  — Dragon HD male narrator (default)
@@ -43,34 +48,74 @@ def _ticks_to_ms(ticks: int) -> int:
     return ticks // 10000
 
 
+def _fmt_ts(ms: int) -> str:
+    return (
+        f"{ms // 3600000:02d}:{(ms // 60000) % 60:02d}:"
+        f"{(ms // 1000) % 60:02d},{ms % 1000:03d}"
+    )
+
+
+def _ends_clause(token: str) -> bool:
+    return bool(token) and token[-1] in _BREAK_AFTER
+
+
 def json_to_srt(words: list[dict]) -> tuple[str, int]:
-    output = []
+    """Build clause-aware captions.
+
+    Cuts a caption after clause punctuation (, . ! ? : ;) or when the next word
+    would exceed MAX_CHARS, then merges captions that would flash too briefly
+    (shorter than MIN_SEGMENT_MS) as long as the merge still fits MAX_CHARS.
+    """
+    n = len(words)
+    if n == 0:
+        return "", 0
+
+    # 1) Initial clause/length segments as [start_idx, end_idx] inclusive.
+    segments: list[list[int]] = []
     i = 0
-    seq_no = 1
-
-    while i < len(words):
-        start = words[i]["time"]
-        start_i = i
-        chars = len(words[i]["value"])
-
-        while chars < MIN_CHARS and i + 1 < len(words):
-            i += 1
-            chars += len(words[i]["value"])
-            if chars > MAX_CHARS:
-                chars -= len(words[i]["value"])
-                i -= 1
+    while i < n:
+        j = i
+        while j < n - 1:
+            if _ends_clause(words[j]["value"]):
                 break
+            candidate = _join_words([w["value"] for w in words[i : j + 2]])
+            if len(candidate) > MAX_CHARS:
+                break
+            j += 1
+        segments.append([i, j])
+        i = j + 1
 
-        end = words[i + 1]["time"] - 1 if i + 1 < len(words) else words[start_i]["time"] + 1000
-        line = _join_words([word["value"] for word in words[start_i : i + 1]])
-        output.append(
-            f"{seq_no}\n"
-            f"{start // 3600000:02d}:{(start // 60000) % 60:02d}:{(start // 1000) % 60:02d},{start % 1000:03d} --> "
-            f"{end // 3600000:02d}:{(end // 60000) % 60:02d}:{(end // 1000) % 60:02d},{end % 1000:03d}\n"
-            f"{line}\n"
-        )
-        i += 1
-        seq_no += 1
+    def seg_start(seg: list[int]) -> int:
+        return words[seg[0]]["time"]
+
+    def seg_end(seg: list[int]) -> int:
+        nxt = seg[1] + 1
+        return words[nxt]["time"] - 1 if nxt < n else words[seg[0]]["time"] + 1500
+
+    # 2) Forward-merge captions that display too briefly, respecting MAX_CHARS.
+    merged: list[list[int]] = []
+    k = 0
+    while k < len(segments):
+        cur = list(segments[k])
+        while k + 1 < len(segments):
+            nxt = segments[k + 1]
+            combined = _join_words([w["value"] for w in words[cur[0] : nxt[1] + 1]])
+            if seg_end(cur) - seg_start(cur) < MIN_SEGMENT_MS and len(combined) <= MAX_CHARS:
+                cur[1] = nxt[1]
+                k += 1
+            else:
+                break
+        merged.append(cur)
+        k += 1
+
+    # 3) Emit SRT.
+    output = []
+    end = 0
+    for seq_no, seg in enumerate(merged, 1):
+        start = seg_start(seg)
+        end = seg_end(seg)
+        line = _join_words([w["value"] for w in words[seg[0] : seg[1] + 1]])
+        output.append(f"{seq_no}\n{_fmt_ts(start)} --> {_fmt_ts(end)}\n{line}\n")
 
     return "\n".join(output), end
 
@@ -164,12 +209,7 @@ def get_audio(
     else:
         log.warning("No word boundaries returned; writing single-block subtitle")
         end_time = 30000
-        srt_content = (
-            f"1\n"
-            f"00:00:00,000 --> {end_time // 3600000:02d}:{(end_time // 60000) % 60:02d}:"
-            f"{(end_time // 1000) % 60:02d},{end_time % 1000:03d}\n"
-            f"{text}\n"
-        )
+        srt_content = f"1\n00:00:00,000 --> {_fmt_ts(end_time)}\n{text}\n"
 
     with open(srt_path, "w") as srt_file:
         srt_file.write(srt_content)

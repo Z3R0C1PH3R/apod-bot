@@ -29,3 +29,6 @@ test-run/
 
 # OS / editor
 .DS_Store
+
+# Local trial/preview output
+trial/
