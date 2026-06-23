@@ -18,6 +18,8 @@ from utils import setup_logging
 log = logging.getLogger("apod")
 
 INTRO_SECONDS = 5
+# Original video audio is mixed under the narration at this volume.
+VIDEO_BG_VOLUME = 0.30
 
 
 def _run_ffmpeg(args: list[str]) -> None:
@@ -30,6 +32,91 @@ def _run_ffmpeg(args: list[str]) -> None:
     if proc.returncode != 0:
         log.error("ffmpeg failed (%d): %s", proc.returncode, proc.stderr.strip()[-2000:])
         raise RuntimeError(f"ffmpeg failed with code {proc.returncode}")
+
+
+def _ffprobe_duration(path: str) -> float:
+    proc = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=nokey=1:noprint_wrappers=1", path],
+        capture_output=True, text=True,
+    )
+    try:
+        return float(proc.stdout.strip())
+    except ValueError:
+        return 0.0
+
+
+def _has_audio(path: str) -> bool:
+    proc = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
+         "stream=index", "-of", "csv=p=0", path],
+        capture_output=True, text=True,
+    )
+    return bool(proc.stdout.strip())
+
+
+def _atempo_chain(factor: float) -> str:
+    """atempo only accepts 0.5-2.0; chain filters to reach larger factors."""
+    parts = []
+    f = factor
+    while f > 2.0:
+        parts.append("atempo=2.0")
+        f /= 2.0
+    while f < 0.5:
+        parts.append("atempo=0.5")
+        f *= 2.0
+    parts.append(f"atempo={f:.4f}")
+    return ",".join(parts)
+
+
+def process_clip(video_in, narration_path, srt_path, video_path, narration_ms):
+    """Compose a vertical short from an actual video: blurred (uncropped) clip
+    centered on a blurred background, looped or sped up to the narration length,
+    with the clip's own audio mixed under the narration and subtitles burned in.
+    """
+    narration_s = max(narration_ms / 1000.0, 0.5)
+    dv = _ffprobe_duration(video_in)
+    has_audio = _has_audio(video_in)
+    speed_up = dv > narration_s + 0.2
+
+    input_opts = []
+    setpts = ""
+    if speed_up:
+        setpts = f"setpts=PTS*{narration_s / dv:.6f},"
+    else:
+        input_opts = ["-stream_loop", "-1"]
+
+    vfilter = (
+        f"[0:v]{setpts}split=2[bg][fg];"
+        "[bg]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=30[bgb];"
+        "[fg]scale=1080:1920:force_original_aspect_ratio=decrease[fgs];"
+        "[bgb][fgs]overlay=(W-w)/2:(H-h)/2[ov];"
+        f"[ov]subtitles={srt_path}:force_style='Alignment=10'[v]"
+    )
+
+    args = list(input_opts) + ["-i", video_in, "-i", narration_path]
+
+    if has_audio:
+        tempo = (_atempo_chain(dv / narration_s) + ",") if speed_up else ""
+        afilter = (
+            f"[0:a]{tempo}volume={VIDEO_BG_VOLUME}[va];"
+            "[1:a]volume=1.0[na];"
+            "[va][na]amix=inputs=2:duration=longest:normalize=0[a]"
+        )
+        filter_complex = vfilter + ";" + afilter
+        audio_map = ["-map", "[a]"]
+    else:
+        filter_complex = vfilter
+        audio_map = ["-map", "1:a"]
+
+    _run_ffmpeg(
+        args
+        + ["-filter_complex", filter_complex, "-map", "[v]"]
+        + audio_map
+        + ["-t", f"{narration_s:.3f}", "-r", "30",
+           "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", video_path]
+    )
+    log.info("Wrote clip video %s (%.2f MB)", video_path, os.path.getsize(video_path) / 1_000_000)
 
 
 def process_video(image_path, audio_path, srt_path, video_path, duration_ms):
@@ -81,7 +168,10 @@ def build_description(date, text, data, voice_name, attribution=True):
     """Compose the post text. When attribution is False, the voice/automation
     notes are omitted (used for the Instagram caption)."""
     is_video = data["media_type"] == "video"
-    image_ref = data["thumbnail_url"] if is_video else data.get("hdurl", data["url"])
+    if is_video:
+        image_ref = data.get("thumbnail_url") or data["url"]
+    else:
+        image_ref = data.get("hdurl", data["url"])
     hashtags = (
         "#nasa #apod"
         if is_video
@@ -106,7 +196,7 @@ def build_description(date, text, data, voice_name, attribution=True):
 
 
 def run(date=None):
-    image_path, data = img.nasa_apod(date)
+    media_path, data = img.nasa_apod(date)
     date = data["date"]
     text = f"{data['title']}:\n{data['explanation']}"
 
@@ -123,7 +213,10 @@ def run(date=None):
 
     os.makedirs("videos", exist_ok=True)
     video_path = f"videos/{date}.mp4"
-    process_video(image_path, audio_path, srt_path, video_path, audio_len)
+    if data.get("use_clip"):
+        process_clip(media_path, audio_path, srt_path, video_path, audio_len)
+    else:
+        process_video(media_path, audio_path, srt_path, video_path, audio_len)
 
     voice_name = os.getenv("AZURE_SPEECH_VOICE", "en-US-Andrew:DragonHDLatestNeural")
     title = f"{data['title']} #shorts"
