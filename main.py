@@ -166,33 +166,34 @@ def process_video(image_path, audio_path, srt_path, video_path, duration_ms):
 
 def build_description(date, text, data, voice_name, attribution=True):
     """Compose the post text. When attribution is False, the voice/automation
-    notes are omitted (used for the Instagram caption)."""
+    notes are omitted (used for the Instagram caption). The 'Image-' link is
+    included only for image APODs (videos link via 'Video-')."""
     is_video = data["media_type"] == "video"
-    if is_video:
-        image_ref = data.get("thumbnail_url") or data["url"]
-    else:
-        image_ref = data.get("hdurl", data["url"])
     hashtags = (
         "#nasa #apod"
         if is_video
         else "#nasa #apod #space #astronomy #astrophotography #explore #reels #fyp #foryoupage"
     )
 
-    lines = [f"{date} NASA's APOD update-"]
+    header = [f"{date} NASA's APOD update-"]
     if is_video:
-        lines.append(f"Video- {data['url']}")
-    lines.append(text)
-    lines.append("")
-    lines.append(f"Image- {image_ref}")
-    if attribution:
-        lines.append(f"Voice using Azure TTS ({voice_name})")
-    lines.append("")
-    lines.append(hashtags)
-    if attribution:
-        lines.append("")
-        lines.append("Uploaded Automatically by a program, an experiment by Z3R0C1PH3R")
+        header.append(f"Video- {data['url']}")
+    header.append(text)
 
-    return "\n".join(lines).replace(">", "").replace("<", "")
+    details = []
+    if not is_video:
+        details.append(f"Image- {data.get('hdurl', data['url'])}")
+    if attribution:
+        details.append(f"Voice using Azure TTS ({voice_name})")
+
+    blocks = ["\n".join(header)]
+    if details:
+        blocks.append("\n".join(details))
+    blocks.append(hashtags)
+    if attribution:
+        blocks.append("Uploaded Automatically by a program, an experiment by Z3R0C1PH3R")
+
+    return "\n\n".join(blocks).replace(">", "").replace("<", "")
 
 
 def run(date=None):
