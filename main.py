@@ -55,6 +55,19 @@ def _has_audio(path: str) -> bool:
     return bool(proc.stdout.strip())
 
 
+def _video_dimensions(path: str) -> tuple[int, int]:
+    proc = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+         "stream=width,height", "-of", "csv=p=0", path],
+        capture_output=True, text=True,
+    )
+    try:
+        w, h = proc.stdout.strip().split(",")[:2]
+        return int(w), int(h)
+    except ValueError:
+        return 0, 0
+
+
 def _atempo_chain(factor: float) -> str:
     """atempo only accepts 0.5-2.0; chain filters to reach larger factors."""
     parts = []
@@ -79,6 +92,13 @@ def process_clip(video_in, narration_path, srt_path, video_path, narration_ms):
     has_audio = _has_audio(video_in)
     speed_up = dv > narration_s + 0.2
 
+    # For landscape clips, the video sits in a centered band with blurred bars
+    # above/below; put the captions up in the top blurred area instead of over
+    # the footage. Portrait/square clips fill the height, so keep them centered.
+    vw, vh = _video_dimensions(video_in)
+    landscape = vw > vh
+    sub_style = "Alignment=6,MarginV=55" if landscape else "Alignment=10"
+
     input_opts = []
     setpts = ""
     if speed_up:
@@ -91,7 +111,7 @@ def process_clip(video_in, narration_path, srt_path, video_path, narration_ms):
         "[bg]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=30[bgb];"
         "[fg]scale=1080:1920:force_original_aspect_ratio=decrease[fgs];"
         "[bgb][fgs]overlay=(W-w)/2:(H-h)/2[ov];"
-        f"[ov]subtitles={srt_path}:force_style='Alignment=10'[v]"
+        f"[ov]subtitles={srt_path}:force_style='{sub_style}'[v]"
     )
 
     args = list(input_opts) + ["-i", video_in, "-i", narration_path]
